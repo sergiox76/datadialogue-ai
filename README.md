@@ -1,319 +1,273 @@
-# 🏦 DataDialogue AI — Guía completa de configuración
+# QueryVoice 🎙️ · AI SQL Assistant
 
-> Consulta una base de datos bancaria con **lenguaje natural** (texto o voz), sin escribir SQL.
+> Consulta tu base de datos PostgreSQL usando **lenguaje natural o voz**. El sistema traduce tu pregunta a SQL con un LLM local (LLaMA 3), ejecuta la consulta y responde en audio con voz sintética de ElevenLabs.
 
----
-
-## 📁 Archivos del proyecto
-
-```
-datadialogue-ai/
-├── requirements.txt        ← Todas las dependencias
-├── .env.example            ← Plantilla de variables de entorno
-├── setup_db.py             ← Crea banco.db (SQLite) con datos de ejemplo
-├── postgresql_schema.sql   ← DDL completo para PostgreSQL
-├── migrar_postgresql.py    ← Migra SQLite → PostgreSQL
-└── app.py                  ← Aplicación Streamlit completa
-```
+![Python](https://img.shields.io/badge/Python-3.10+-3776AB?style=flat-square&logo=python&logoColor=white)
+![Streamlit](https://img.shields.io/badge/Streamlit-1.x-FF4B4B?style=flat-square&logo=streamlit&logoColor=white)
+![PostgreSQL](https://img.shields.io/badge/PostgreSQL-15+-336791?style=flat-square&logo=postgresql&logoColor=white)
+![Ollama](https://img.shields.io/badge/Ollama-LLaMA3-black?style=flat-square)
+![ElevenLabs](https://img.shields.io/badge/ElevenLabs-TTS-6B21A8?style=flat-square)
 
 ---
 
-## 🔁 Flujo del sistema
+## ✨ Características
+
+- 💬 **Lenguaje natural → SQL** usando LLaMA 3 a través de Ollama (100% local)
+- 🎤 **Entrada por voz** con reconocimiento de audio en español
+- 🔊 **Respuesta en audio** sintetizada con la API de ElevenLabs
+- 📊 **Visualización automática** de datos en tablas y gráficas de barras
+- 📜 **Historial de consultas** persistente en la sesión
+- 🌑 **UI dark premium** con diseño responsive en Streamlit
+
+---
+
+## 🗂️ Estructura del Proyecto
 
 ```
-Usuario (texto o audio)
+queryvoice/
+│
+├── app.py              # 🖥️  Interfaz principal (Streamlit)
+├── llm.py              # 🧠  Traduce pregunta → SQL usando Ollama/LLaMA3
+├── db.py               # 🗃️  Ejecuta el SQL en PostgreSQL
+├── voice.py            # 🔊  Genera audio con ElevenLabs TTS
+├── config.py           # ⚙️  Variables de configuración (API keys, DB)
+├── main.py             # 🖥️  Versión CLI del asistente (sin Streamlit)
+├── test_voices.py      # 🧪  Script para listar las voces disponibles en ElevenLabs
+├── requirements.txt    # 📦  Dependencias del proyecto
+└── README.md
+```
+
+---
+
+## 🧩 Descripción de cada archivo
+
+### `app.py` — Interfaz Web
+Aplicación principal construida con **Streamlit**. Gestiona el flujo completo:
+1. Recibe la pregunta (texto o voz)
+2. Llama a `llm.py` para generar el SQL
+3. Llama a `db.py` para ejecutarlo
+4. Muestra el resultado, la tabla y la gráfica
+5. Llama a `voice.py` para responder en audio
+6. Mantiene el historial de consultas en `st.session_state`
+
+### `llm.py` — Motor LLM
+Envía un prompt al modelo **LLaMA 3** (corriendo localmente con Ollama) que incluye el esquema de la tabla y la pregunta del usuario. El modelo devuelve únicamente el SQL válido.
+
+### `db.py` — Conexión a PostgreSQL
+Usa **psycopg2** para conectarse a la base de datos, ejecutar el SQL generado y retornar los resultados como una lista de tuplas.
+
+### `voice.py` — Síntesis de Voz
+Llama a la API REST de **ElevenLabs** con el texto de la respuesta y guarda el audio resultante como `respuesta.mp3`. Usa el modelo `eleven_multilingual_v2` para soporte en español.
+
+### `config.py` — Configuración
+Centraliza todas las variables de entorno y configuración: credenciales de la base de datos, URL de Ollama, nombre del modelo y API key de ElevenLabs.
+
+> ⚠️ **No subas este archivo a GitHub con credenciales reales.** Usa variables de entorno o un `.env` (ver sección de seguridad).
+
+### `main.py` — Versión CLI
+Versión de línea de comandos del asistente para pruebas sin interfaz web. Permite interactuar directamente desde la terminal.
+
+### `test_voices.py` — Explorador de Voces
+Script de utilidad para listar todas las voces disponibles en tu cuenta de ElevenLabs y obtener sus `VOICE_ID`.
+
+---
+
+## ⚙️ Requisitos
+
+### Software
+- Python **3.10+**
+- [Ollama](https://ollama.com) instalado y corriendo con el modelo `llama3`
+- PostgreSQL **13+** con tu base de datos configurada
+- Cuenta en [ElevenLabs](https://elevenlabs.io) (plan gratuito funciona)
+
+### Hardware recomendado (para LLaMA 3)
+- 16 GB RAM mínimo
+- GPU NVIDIA con ≥ 8 GB VRAM (opcional pero recomendado)
+
+---
+
+## 🚀 Instalación
+
+### 1. Clona el repositorio
+```bash
+git clone https://github.com/tu-usuario/queryvoice.git
+cd queryvoice
+```
+
+### 2. Crea un entorno virtual e instala dependencias
+```bash
+python -m venv venv
+source venv/bin/activate        # Linux/Mac
+# venv\Scripts\activate         # Windows
+
+pip install -r requirements.txt
+pip install streamlit speechrecognition pyaudio matplotlib
+```
+
+### 3. Configura Ollama con LLaMA 3
+```bash
+# Instalar Ollama: https://ollama.com/download
+ollama pull llama3
+ollama serve        # Debe quedar corriendo en http://localhost:11434
+```
+
+### 4. Configura la base de datos
+```sql
+-- Crea la base de datos y la tabla en PostgreSQL
+CREATE DATABASE california_housing;
+
+CREATE TABLE viviendas (
+    longitude          FLOAT,
+    latitude           FLOAT,
+    housing_median_age FLOAT,
+    total_rooms        FLOAT,
+    total_bedrooms     FLOAT,
+    population         FLOAT,
+    households         FLOAT,
+    median_income      FLOAT,
+    median_house_value FLOAT
+);
+-- Luego importa tu CSV con COPY o pgAdmin
+```
+
+### 5. Configura tus credenciales
+Edita `config.py` con tus datos reales:
+```python
+DB_CONFIG = {
+    "host":     "localhost",
+    "database": "california_housing",
+    "user":     "tu_usuario",
+    "password": "tu_password"
+}
+
+OLLAMA_URL = "http://localhost:11434/api/generate"
+MODEL      = "llama3"
+
+ELEVENLABS_API_KEY = "sk_tu_api_key_aqui"
+```
+
+### 6. Ejecuta la app
+```bash
+streamlit run app.py
+```
+
+Abre el navegador en **http://localhost:8501**
+
+---
+
+## 🔒 Seguridad — Variables de Entorno (recomendado)
+
+Para no exponer credenciales en el repositorio, usa un archivo `.env`:
+
+```bash
+pip install python-dotenv
+```
+
+Crea `.env` en la raíz:
+```env
+DB_HOST=localhost
+DB_NAME=california_housing
+DB_USER=postgres
+DB_PASSWORD=tu_password
+ELEVENLABS_API_KEY=sk_tu_key
+```
+
+Actualiza `config.py`:
+```python
+import os
+from dotenv import load_dotenv
+load_dotenv()
+
+DB_CONFIG = {
+    "host":     os.getenv("DB_HOST"),
+    "database": os.getenv("DB_NAME"),
+    "user":     os.getenv("DB_USER"),
+    "password": os.getenv("DB_PASSWORD"),
+}
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+```
+
+Añade al `.gitignore`:
+```
+.env
+config.py
+respuesta.mp3
+__pycache__/
+venv/
+```
+
+---
+
+## 📦 Dependencias principales
+
+| Paquete | Uso |
+|---|---|
+| `streamlit` | Interfaz web interactiva |
+| `psycopg2-binary` | Conexión a PostgreSQL |
+| `requests` | Llamadas HTTP a Ollama y ElevenLabs |
+| `pandas` | Manejo de resultados tabulares |
+| `matplotlib` | Gráficas de visualización |
+| `speechrecognition` | Reconocimiento de voz (Google STT) |
+| `pyaudio` | Captura de audio del micrófono |
+
+---
+
+## 🎯 Cómo funciona (flujo completo)
+
+```
+Usuario habla o escribe
         │
         ▼
-   [Whisper STT]  ◄─ solo si es voz
+[speech_recognition]  ←── Solo si es voz
         │
         ▼
   Pregunta en texto
         │
         ▼
- [LLM: NL → SQL]  ◄─ Ollama / LM Studio / OpenAI
+  [llm.py · LLaMA3]  ──► Genera SQL
         │
         ▼
-  Consulta SQL
+  [db.py · psycopg2] ──► Ejecuta en PostgreSQL
         │
         ▼
-[SQLite / PostgreSQL]
+  Resultado (datos)
         │
         ▼
-   DataFrame
+  [voice.py · ElevenLabs] ──► Genera audio MP3
         │
         ▼
-[LLM: Tabla → Respuesta natural]
-        │
-        ▼
-   Respuesta en texto
-        │
-        ▼
- [gTTS / ElevenLabs TTS]  ◄─ opcional
-        │
-        ▼
-   Audio reproducible
+  [app.py · Streamlit]
+    ├── Muestra respuesta en texto
+    ├── Reproduce audio
+    ├── Muestra tabla de datos
+    ├── Genera gráfica automática
+    └── Guarda en historial
 ```
 
 ---
 
-## ⚙️ Instalación paso a paso
+## 🛠️ Ejemplo de uso
 
-### 1. Pre-requisitos del sistema
+**Pregunta:**
+> ¿Cuál es el valor promedio de las casas?
 
-| Herramienta | Para qué | Descarga |
-|-------------|----------|---------|
-| Python 3.10+ | Todo | https://python.org |
-| ffmpeg | Whisper STT | https://ffmpeg.org/download.html |
-| Ollama (opcional) | LLM local gratis | https://ollama.com |
-| PostgreSQL (opcional) | BD producción | https://postgresql.org |
+**SQL generado:**
+```sql
+SELECT AVG(median_house_value) FROM viviendas;
+```
 
-**Instalar ffmpeg en Windows:**
-```bash
-winget install ffmpeg
-```
-**En macOS:**
-```bash
-brew install ffmpeg
-```
-**En Ubuntu/Debian:**
-```bash
-sudo apt install ffmpeg
-```
+**Respuesta:**
+> *"El resultado es 206855.81"*  
+> 🔊 [audio reproducido automáticamente]
 
 ---
 
-### 2. Crear entorno virtual e instalar dependencias
+## 📝 Licencia
 
-```bash
-# Crear entorno virtual
-python -m venv venv
-
-# Activar (Windows)
-venv\Scripts\activate
-
-# Activar (macOS/Linux)
-source venv/bin/activate
-
-# Instalar dependencias
-pip install -r requirements.txt
-```
-
-> ⚠️ `openai-whisper` descarga ~140 MB la primera vez que lo usas.
+MIT License — libre para usar, modificar y distribuir.
 
 ---
 
-### 3. Configurar variables de entorno
+## 🙌 Créditos
 
-```bash
-# Copiar la plantilla
-cp .env.example .env
-
-# Editar .env con tu editor favorito
-```
-
-**Mínimo necesario** para empezar con SQLite + OpenAI:
-```
-OPENAI_API_KEY=sk-proj-tu_clave_aqui
-DB_TYPE=sqlite
-SQLITE_PATH=banco.db
-```
-
----
-
-### 4. Crear la base de datos
-
-```bash
-python setup_db.py
-```
-Salida esperada:
-```
-✅ Base de datos 'banco.db' creada y poblada correctamente.
-   Tablas: ciudad (4), clientes (5), cuentas (6), movimientos (10)
-```
-
----
-
-### 5. Lanzar la aplicación
-
-```bash
-streamlit run app.py
-```
-Se abre automáticamente en: **http://localhost:8501**
-
----
-
-## 🧠 Fase 4: LLM Local con Ollama
-
-### Instalar Ollama
-
-Descarga desde https://ollama.com e instala.
-
-### Descargar un modelo
-
-```bash
-# Modelo liviano (~2 GB RAM) — recomendado para empezar
-ollama pull llama3.2
-
-# Modelo más preciso (~4 GB RAM)
-ollama pull mistral
-
-# Modelo más grande y capaz (~8 GB RAM)
-ollama pull llama3.1:8b
-```
-
-### Verificar que Ollama corre
-
-```bash
-ollama list          # ver modelos descargados
-ollama serve         # iniciar el servidor (si no corre ya)
-curl http://localhost:11434/v1/models  # verificar API
-```
-
-### Configurar en .env
-
-```
-LLM_PROVIDER=ollama
-LLM_BASE_URL=http://localhost:11434/v1
-LLM_MODEL=llama3.2
-```
-
-O directamente en la barra lateral de la app.
-
----
-
-## 🧠 Fase 4: LLM Local con LM Studio
-
-1. Descarga LM Studio desde https://lmstudio.ai
-2. Descarga un modelo desde la pestaña "Discover" (ej. `mistral-7b-instruct`)
-3. Ve a "Local Server" y haz clic en "Start Server"
-4. Configura:
-
-```
-LLM_PROVIDER=lmstudio
-LLM_BASE_URL=http://localhost:1234/v1
-LLM_MODEL=mistral-7b-instruct-v0.2
-```
-
----
-
-## 🗄️ Fase 2: Migración a PostgreSQL
-
-### Instalar PostgreSQL
-
-- Windows: https://www.postgresql.org/download/windows/
-- macOS: `brew install postgresql`
-- Ubuntu: `sudo apt install postgresql`
-
-### Crear la base de datos
-
-```bash
-psql -U postgres
-CREATE DATABASE banco;
-\q
-```
-
-### Opción A: Migrar desde banco.db (si ya tienes datos)
-
-```bash
-python migrar_postgresql.py
-```
-
-### Opción B: Crear desde cero con el script SQL
-
-```bash
-psql -U postgres -d banco -f postgresql_schema.sql
-```
-
-### Configurar en .env
-
-```
-DB_TYPE=postgresql
-PG_HOST=localhost
-PG_PORT=5432
-PG_USER=postgres
-PG_PASSWORD=tu_contraseña
-PG_DATABASE=banco
-```
-
----
-
-## 🎧 Fase 5: Síntesis de voz
-
-### gTTS (gratis, sin API key)
-
-Ya incluido. Solo selecciona "gTTS" en la barra lateral.
-
-### ElevenLabs (voz de alta calidad en español)
-
-1. Regístrate en https://elevenlabs.io (plan gratis: 10k caracteres/mes)
-2. Copia tu API key
-3. Configura en .env:
-
-```
-ELEVENLABS_API_KEY=tu_clave_aqui
-ELEVENLABS_VOICE_ID=XB0fDUnXU5powFXDhCwa
-```
-
-**Voces en español recomendadas:**
-| Nombre | ID | Acento |
-|--------|-----|--------|
-| Charlotte | XB0fDUnXU5powFXDhCwa | Español neutro |
-| Valentino | onwK4e9ZLuTAKqWW03F9 | Español latinoamericano |
-
----
-
-## ❓ Preguntas de prueba
-
-```
-¿Qué clientes viven en Bogotá?
-¿Cuál es el saldo total por ciudad?
-¿Cuántas cuentas activas hay?
-¿Qué movimientos tuvo Ana Gómez?
-¿Cuáles son las 3 cuentas con mayor saldo?
-¿Cuánto dinero se consignó en abril de 2026?
-¿Qué clientes tienen más de una cuenta?
-Muéstrame todos los retiros mayores a 200.000
-```
-
----
-
-## 🐛 Solución de problemas comunes
-
-| Error | Causa | Solución |
-|-------|-------|---------|
-| `banco.db not found` | No se ejecutó setup_db.py | `python setup_db.py` |
-| `OPENAI_API_KEY not set` | Falta clave en .env | Agregar clave al .env |
-| `Connection refused (11434)` | Ollama no corre | `ollama serve` |
-| `ffmpeg not found` | ffmpeg no instalado | Instalar ffmpeg |
-| `ModuleNotFoundError: whisper` | Whisper no instalado | `pip install openai-whisper` |
-| SQL retorna vacío | Diferencia de mayúsculas | El modelo usa ILIKE; intenta reformular |
-
----
-
-## 🏗️ Arquitectura de componentes
-
-```
-┌─────────────────────────────────────────────────┐
-│                  app.py (Streamlit)              │
-│                                                  │
-│  ┌──────────┐  ┌──────────────┐  ┌───────────┐  │
-│  │ Tab Texto│  │  Tab Voz     │  │ Historial │  │
-│  └────┬─────┘  └──────┬───────┘  └───────────┘  │
-│       │               │                          │
-│       └───────┬────────┘                         │
-│               ▼                                  │
-│  ┌────────────────────────────┐                  │
-│  │  procesar_pregunta()       │                  │
-│  │  1. generar_sql()   → LLM  │                  │
-│  │  2. ejecutar_sql()  → BD   │                  │
-│  │  3. generar_respuesta()    │                  │
-│  │  4. sintetizar_voz()       │                  │
-│  └────────────────────────────┘                  │
-└─────────────────────────────────────────────────┘
-         │              │              │
-    ┌────┴────┐  ┌───────┴──────┐ ┌───┴────────┐
-    │ SQLite /│  │ Ollama /     │ │ gTTS /     │
-    │PostgreSQL│  │ LM Studio /  │ │ ElevenLabs │
-    └─────────┘  │ OpenAI       │ └────────────┘
-                 └──────────────┘
-```
+Construido con [Streamlit](https://streamlit.io) · [Ollama](https://ollama.com) · [ElevenLabs](https://elevenlabs.io) · [PostgreSQL](https://postgresql.org)

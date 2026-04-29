@@ -1,37 +1,4 @@
-# ============================================================
-# DataDialogue AI — Dependencias
-# ============================================================
-# Instalar con: pip install -r requirements.txt
-
-# --- Base de datos ---
-sqlalchemy>=2.0
-psycopg2-binary>=2.9      # PostgreSQL driver
-
-# --- LangChain + LLM ---
-langchain>=0.3
-langchain-core>=0.3
-langchain-openai>=0.2     # Funciona con OpenAI, Ollama y LM Studio
-langchain-community>=0.3
-
-# --- Datos ---
-pandas>=2.0
-
-# --- Web app ---
-streamlit>=1.35
-
-# --- Voz: STT (Speech-to-Text) ---
-openai-whisper>=20231117  # Whisper local (requiere ffmpeg)
-# Alternativa más liviana: faster-whisper>=1.0
-
-# --- Voz: TTS (Text-to-Speech) ---
-gTTS>=2.5                 # TTS gratuita (Google), sin API key
-elevenlabs>=1.3           # TTS de alta calidad (requiere API key)
-
-# --- Audio ---
-sounddevice>=0.4          # Grabación de micrófono
-scipy>=1.11               # Guardar .wav
-pydub>=0.25               # Conversión de formatos (requiere ffmpeg)
-
-# --- Utilidades ---
-python-dotenv>=1.0        # Leer .env
-requests>=2.31
+psycopg2-binary
+requests
+pandas
+sqlalchemy

@@ -1,540 +1,634 @@
-"""
-============================================================
-DataDialogue AI — app.py
-Aplicación Streamlit completa: texto + voz, NL→SQL, TTS
-============================================================
-Ejecutar: streamlit run app.py
-============================================================
-Tecnologías:
-  • Base de datos : SQLite (por defecto) o PostgreSQL
-  • LLM NL→SQL   : Ollama local / LM Studio / OpenAI
-  • STT           : Whisper (local, gratis)
-  • TTS           : gTTS (gratis) o ElevenLabs (premium)
-============================================================
-"""
-
-import os, io, re, tempfile, time
-import sqlite3
-import pandas as pd
 import streamlit as st
-from dotenv import load_dotenv
+import speech_recognition as sr
+import pandas as pd
+import matplotlib.pyplot as plt
+from llm import pregunta_a_sql
+from db import ejecutar_sql
+from voice import hablar
 
-# ── Importaciones opcionales (no fallan si no están) ──────
-try:
-    from langchain_openai import ChatOpenAI
-    from langchain_core.prompts import PromptTemplate
-    from langchain_core.output_parsers import StrOutputParser
-    LANGCHAIN_OK = True
-except ImportError:
-    LANGCHAIN_OK = False
+st.set_page_config(
+    page_title="QueryVoice · AI SQL Assistant",
+    layout="wide",
+    initial_sidebar_state="expanded",
+    menu_items={"About": "QueryVoice — Consulta tu base de datos con lenguaje natural y voz."}
+)
 
-try:
-    import whisper as openai_whisper
-    WHISPER_OK = True
-except ImportError:
-    WHISPER_OK = False
+# ─────────────────────────────────────────────
+# 🎨 ESTILOS GLOBALES
+# ─────────────────────────────────────────────
+st.markdown("""
+<style>
+@import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,300;0,400;0,500;1,300&family=Syne:wght@400;600;700;800&display=swap');
 
-try:
-    from gtts import gTTS
-    GTTS_OK = True
-except ImportError:
-    GTTS_OK = False
+/* === ROOT VARIABLES === */
+:root {
+    --bg:        #0a0c10;
+    --surface:   #111318;
+    --border:    #1e2330;
+    --accent:    #00d4aa;
+    --accent2:   #7b61ff;
+    --danger:    #ff4d6d;
+    --text:      #e8eaf0;
+    --muted:     #6b7280;
+    --card:      #13161e;
+    --glow:      0 0 20px rgba(0,212,170,.18);
+}
 
-try:
-    from elevenlabs.client import ElevenLabs
-    ELEVENLABS_OK = True
-except ImportError:
-    ELEVENLABS_OK = False
+/* === FONDO GLOBAL === */
+html, body, [data-testid="stAppViewContainer"] {
+    background: var(--bg) !important;
+    font-family: 'Syne', sans-serif !important;
+    color: var(--text) !important;
+}
+[data-testid="stHeader"] { background: transparent !important; }
 
-try:
-    from sqlalchemy import create_engine, text
-    SQLALCHEMY_OK = True
-except ImportError:
-    SQLALCHEMY_OK = False
+/* === SIDEBAR === */
+[data-testid="stSidebar"] {
+    background: var(--surface) !important;
+    border-right: 1px solid var(--border) !important;
+}
+[data-testid="stSidebar"] * { font-family: 'Syne', sans-serif !important; }
 
-load_dotenv()
+/* === BOTÓN COLAPSAR SIDEBAR — ocultar texto feo === */
+[data-testid="stSidebarCollapseButton"] button,
+[data-testid="stSidebarCollapseButton"] {
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+    width: 36px !important;
+    height: 36px !important;
+    padding: 0 !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+    cursor: pointer !important;
+    border-radius: 8px !important;
+    transition: background .2s !important;
+}
+[data-testid="stSidebarCollapseButton"]:hover {
+    background: rgba(0,212,170,.1) !important;
+}
+/* Ocultar el ícono SVG original de Material */
+[data-testid="stSidebarCollapseButton"] svg {
+    display: none !important;
+}
+/* Inyectar flecha ← con pseudo-elemento */
+[data-testid="stSidebarCollapseButton"] button::before {
+    content: '←';
+    font-size: 1.25rem;
+    color: var(--muted);
+    line-height: 1;
+    transition: color .2s, transform .2s;
+    font-family: 'Syne', sans-serif;
+}
+[data-testid="stSidebarCollapseButton"] button:hover::before {
+    color: var(--accent);
+    transform: translateX(-2px);
+}
 
-# ══════════════════════════════════════════════════════════
-# CONFIGURACIÓN
-# ══════════════════════════════════════════════════════════
+/* Cuando el sidebar está colapsado, la flecha apunta → */
+[data-testid="stSidebarCollapsedControl"] button::before {
+    content: '→';
+    font-size: 1.25rem;
+    color: var(--muted);
+    line-height: 1;
+    transition: color .2s, transform .2s;
+    font-family: 'Syne', sans-serif;
+}
+[data-testid="stSidebarCollapsedControl"] button:hover::before {
+    color: var(--accent);
+    transform: translateX(2px);
+}
+[data-testid="stSidebarCollapsedControl"] button {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 8px !important;
+    width: 36px !important;
+    height: 36px !important;
+    display: flex !important;
+    align-items: center !important;
+    justify-content: center !important;
+}
+[data-testid="stSidebarCollapsedControl"] svg {
+    display: none !important;
+}
 
-# Esquema de la BD que el LLM usará para generar SQL
-ESQUEMA_BD = """
-Base de datos: banco
+/* === HERO HEADER === */
+.hero {
+    padding: 2.5rem 2rem 1.5rem;
+    background: linear-gradient(135deg, #0d1117 0%, #131825 60%, #0f1620 100%);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    margin-bottom: 1.5rem;
+    position: relative;
+    overflow: hidden;
+}
+.hero::before {
+    content: '';
+    position: absolute;
+    top: -60px; left: -60px;
+    width: 260px; height: 260px;
+    background: radial-gradient(circle, rgba(0,212,170,.12) 0%, transparent 70%);
+    pointer-events: none;
+}
+.hero::after {
+    content: '';
+    position: absolute;
+    bottom: -40px; right: -40px;
+    width: 200px; height: 200px;
+    background: radial-gradient(circle, rgba(123,97,255,.1) 0%, transparent 70%);
+    pointer-events: none;
+}
+.hero-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 2.2rem;
+    font-weight: 800;
+    letter-spacing: -0.03em;
+    background: linear-gradient(90deg, #00d4aa, #7b61ff);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    margin: 0 0 .4rem;
+}
+.hero-sub {
+    font-family: 'DM Mono', monospace;
+    font-size: .82rem;
+    color: var(--muted);
+    letter-spacing: .06em;
+}
 
-Tablas:
-1. ciudad       (id_ciudad, nombre_ciudad, departamento)
-2. clientes     (id_cliente, nombre, apellido, documento,
-                 fecha_nacimiento, id_ciudad, telefono, correo)
-3. cuentas      (id_cuenta, id_cliente, tipo_cuenta, saldo,
-                 fecha_apertura, estado)
-   - tipo_cuenta valores: 'Ahorros', 'Corriente'
-   - estado valores: 'Activa', 'Inactiva'
-4. movimientos  (id_movimiento, id_cuenta, fecha_movimiento,
-                 tipo_movimiento, valor, descripcion)
-   - tipo_movimiento valores: 'Consignación', 'Retiro', 'Transferencia'
+/* === RESPONSE CARD === */
+.response-card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--accent);
+    border-radius: 12px;
+    padding: 1.4rem 1.6rem;
+    margin-bottom: 1.2rem;
+    box-shadow: var(--glow);
+    animation: fadeSlide .35s ease;
+}
+.response-label {
+    font-family: 'DM Mono', monospace;
+    font-size: .72rem;
+    letter-spacing: .14em;
+    color: var(--accent);
+    text-transform: uppercase;
+    margin-bottom: .5rem;
+}
+.response-text {
+    font-size: 1.05rem;
+    font-weight: 600;
+    color: var(--text);
+}
 
-Relaciones:
-  clientes.id_ciudad    → ciudad.id_ciudad
-  cuentas.id_cliente    → clientes.id_cliente
-  movimientos.id_cuenta → cuentas.id_cuenta
-"""
+/* === HISTORIAL ITEMS === */
+.hist-item {
+    background: #0d1117;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: .85rem 1rem;
+    margin-bottom: .7rem;
+    transition: border-color .2s;
+}
+.hist-item:hover { border-color: var(--accent); }
+.hist-q {
+    font-family: 'DM Mono', monospace;
+    font-size: .78rem;
+    color: var(--accent);
+    margin-bottom: .3rem;
+}
+.hist-a {
+    font-size: .82rem;
+    color: var(--muted);
+    line-height: 1.5;
+}
 
-PROMPT_SQL = """
-Eres un experto en SQL para SQLite. Convierte la pregunta del usuario en SQL válido.
+/* === SIDEBAR TITLE === */
+.sidebar-title {
+    font-family: 'Syne', sans-serif;
+    font-size: 1.1rem;
+    font-weight: 800;
+    letter-spacing: -.01em;
+    color: var(--text);
+    padding: .5rem 0 1rem;
+    border-bottom: 1px solid var(--border);
+    margin-bottom: 1rem;
+}
 
-NOMBRES EXACTOS DE LAS TABLAS (úsalos exactamente así, con la 's' al final):
-- ciudad
-- clientes
-- cuentas
-- movimientos
+/* === BOTONES === */
+.stButton > button {
+    font-family: 'Syne', sans-serif !important;
+    font-weight: 700 !important;
+    letter-spacing: .04em !important;
+    border-radius: 10px !important;
+    transition: all .2s !important;
+}
+.stButton > button:hover {
+    transform: translateY(-2px) !important;
+    box-shadow: 0 6px 20px rgba(0,212,170,.25) !important;
+}
 
-Reglas:
-1. Responde SOLO con la consulta SQL, sin explicaciones ni markdown.
-2. Solo consultas SELECT.
-3. No uses DROP, DELETE, UPDATE, INSERT ni ALTER.
-4. Usa LIMIT 100 cuando sea pertinente.
-5. Usa JOINs cuando la pregunta involucre varias tablas.
-6. Para filtros de texto usa LOWER() en ambos lados: LOWER(nombre_ciudad) = LOWER('bogota')
-7. Si la pregunta no aplica responde: SELECT 'Pregunta fuera del alcance.' AS mensaje;
+/* === MIC BUTTON ESPECIAL === */
+div[data-testid="column"]:last-child .stButton > button {
+    background: linear-gradient(135deg, #00d4aa, #00b897) !important;
+    color: #0a0c10 !important;
+    border: none !important;
+    font-size: 1.1rem !important;
+    width: 100% !important;
+    height: 46px !important;
+}
+div[data-testid="column"]:last-child .stButton > button:hover {
+    box-shadow: 0 0 24px rgba(0,212,170,.45) !important;
+}
 
-Esquema completo:
-{esquema_bd}
+/* === CHAT INPUT === */
+[data-testid="stChatInput"] textarea {
+    background: var(--surface) !important;
+    border: 1px solid var(--border) !important;
+    border-radius: 12px !important;
+    color: var(--text) !important;
+    font-family: 'DM Mono', monospace !important;
+    font-size: .9rem !important;
+    padding: .85rem 1rem !important;
+    transition: border-color .2s !important;
+}
+[data-testid="stChatInput"] textarea:focus {
+    border-color: var(--accent) !important;
+    box-shadow: 0 0 0 2px rgba(0,212,170,.15) !important;
+}
 
-Pregunta: {pregunta_usuario}
+/* === DATAFRAME === */
+[data-testid="stDataFrame"] {
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    overflow: hidden !important;
+}
 
-SQL:
-"""
+/* === AUDIO PLAYER === */
+audio {
+    border-radius: 10px !important;
+    width: 100% !important;
+    margin-top: .5rem !important;
+    background: var(--surface) !important;
+}
 
-PROMPT_RESPUESTA = """
-Eres un asistente bancario amigable y profesional.
-Tu tarea es convertir un resultado tabular en una respuesta clara en español.
+/* === EXPANDER === */
+[data-testid="stExpander"] {
+    border: 1px solid var(--border) !important;
+    border-radius: 10px !important;
+    background: var(--card) !important;
+}
 
-Reglas:
-1. Responde en lenguaje natural, no en tabla.
-2. Sé breve y directo.
-3. No inventes datos que no estén en el resultado.
-4. Si no hay resultados, dilo claramente.
-5. Puedes usar listas cuando enumeres varios elementos.
+/* === ANIMACIÓN === */
+@keyframes fadeSlide {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+}
 
-Pregunta del usuario: {pregunta_usuario}
-SQL ejecutado: {sql_generado}
-Resultado tabular:
-{resultado_tabular}
+/* === STATUS BADGE === */
+.badge {
+    display: inline-block;
+    padding: .25rem .65rem;
+    border-radius: 20px;
+    font-family: 'DM Mono', monospace;
+    font-size: .7rem;
+    letter-spacing: .08em;
+    font-weight: 500;
+}
+.badge-live  { background: rgba(0,212,170,.12); color: var(--accent); border: 1px solid rgba(0,212,170,.3); }
+.badge-error { background: rgba(255,77,109,.12); color: var(--danger); border: 1px solid rgba(255,77,109,.3); }
 
-Respuesta:
-"""
+/* === DIVIDER === */
+.divider {
+    border: none;
+    border-top: 1px solid var(--border);
+    margin: 1.2rem 0;
+}
+
+/* === CLEAR BTN === */
+.clear-btn .stButton > button {
+    background: transparent !important;
+    border: 1px solid var(--border) !important;
+    color: var(--muted) !important;
+    font-size: .8rem !important;
+    width: 100% !important;
+}
+.clear-btn .stButton > button:hover {
+    border-color: var(--danger) !important;
+    color: var(--danger) !important;
+    box-shadow: none !important;
+}
+</style>
+""", unsafe_allow_html=True)
 
 
-# ══════════════════════════════════════════════════════════
-# CONEXIÓN A BASE DE DATOS
-# ══════════════════════════════════════════════════════════
-
-@st.cache_resource
-def obtener_conexion():
-    """Devuelve una conexión a SQLite o PostgreSQL según .env."""
-    db_type = os.getenv("DB_TYPE", "sqlite").lower()
-
-    if db_type == "postgresql":
-        host     = os.getenv("PG_HOST",     "localhost")
-        port     = os.getenv("PG_PORT",     "5432")
-        user     = os.getenv("PG_USER",     "postgres")
-        password = os.getenv("PG_PASSWORD", "")
-        database = os.getenv("PG_DATABASE", "banco")
-        url = f"postgresql://{user}:{password}@{host}:{port}/{database}"
-        engine = create_engine(url)
-        return engine.connect(), "postgresql"
-    else:
-        sqlite_path = os.getenv("SQLITE_PATH", "banco.db")
-        if not os.path.exists(sqlite_path):
-            st.error(f"❌ No se encontró '{sqlite_path}'. Ejecuta primero: python setup_db.py")
-            st.stop()
-        conn = sqlite3.connect(sqlite_path, check_same_thread=False)
-        return conn, "sqlite"
+# ─────────────────────────────────────────────
+# 🧠 CONTROL DE ESTADO
+# ─────────────────────────────────────────────
+if "historial" not in st.session_state:
+    st.session_state.historial = []
+if "ultima_respuesta" not in st.session_state:
+    st.session_state.ultima_respuesta = None
+if "ultimo_audio" not in st.session_state:
+    st.session_state.ultimo_audio = None
+if "ultimo_df" not in st.session_state:
+    st.session_state.ultimo_df = None
 
 
-# ══════════════════════════════════════════════════════════
-# MODELO DE LENGUAJE (LLM)
-# ══════════════════════════════════════════════════════════
-
-@st.cache_resource
-def obtener_llm():
-    """
-    Carga el LLM según configuración:
-      - Ollama:    LLM_PROVIDER=ollama,   LLM_BASE_URL=http://localhost:11434/v1
-      - LM Studio: LLM_PROVIDER=lmstudio, LLM_BASE_URL=http://localhost:1234/v1
-      - OpenAI:    usa OPENAI_API_KEY directamente
-    """
-    if not LANGCHAIN_OK:
-        return None, None
-
-    provider    = os.getenv("LLM_PROVIDER",  "openai").lower()
-    model       = os.getenv("LLM_MODEL",     "gpt-4.1-mini")
-    base_url    = os.getenv("LLM_BASE_URL",  None)
-    api_key     = os.getenv("OPENAI_API_KEY", "")
-
-    kwargs = {"model": model, "temperature": 0}
-
-    if provider in ("ollama", "lmstudio"):
-        # Ambos usan API compatible con OpenAI; solo cambia la base_url
-        if not base_url:
-            base_url = "http://localhost:11434/v1" if provider == "ollama" else "http://localhost:1234/v1"
-        kwargs["base_url"] = base_url
-        kwargs["api_key"]  = "ollama"  # valor dummy requerido por LangChain
-    else:
-        # OpenAI real
-        if not api_key:
-            return None, "OPENAI_API_KEY no configurada en .env"
-        kwargs["api_key"] = api_key
-
+# ─────────────────────────────────────────────
+# 🎤 VOZ A TEXTO
+# ─────────────────────────────────────────────
+def escuchar():
+    r = sr.Recognizer()
+    with sr.Microphone() as source:
+        st.toast("🎤 Escuchando… habla ahora", icon="🎙️")
+        audio = r.listen(source)
     try:
-        llm = ChatOpenAI(**kwargs)
-        # Cadena NL → SQL
-        cadena_sql = (
-            PromptTemplate(
-                input_variables=["esquema_bd", "pregunta_usuario"],
-                template=PROMPT_SQL
-            ) | llm | StrOutputParser()
-        )
-        # Cadena Resultado → Respuesta natural
-        cadena_resp = (
-            PromptTemplate(
-                input_variables=["pregunta_usuario", "sql_generado", "resultado_tabular"],
-                template=PROMPT_RESPUESTA
-            ) | llm | StrOutputParser()
-        )
-        return (cadena_sql, cadena_resp), None
-    except Exception as e:
-        return None, str(e)
-
-
-# ══════════════════════════════════════════════════════════
-# LÓGICA PRINCIPAL
-# ══════════════════════════════════════════════════════════
-
-def limpiar_sql(texto_sql: str) -> str:
-    """Elimina bloques markdown que el LLM pueda incluir."""
-    sql = texto_sql.strip()
-    sql = re.sub(r"^```sql\s*", "", sql, flags=re.IGNORECASE)
-    sql = re.sub(r"^```\s*",    "", sql)
-    sql = re.sub(r"```$",       "", sql)
-    return sql.strip()
-
-
-def generar_sql(cadena_sql, pregunta: str) -> str:
-    sql = cadena_sql.invoke({
-        "esquema_bd":       ESQUEMA_BD,
-        "pregunta_usuario": pregunta
-    })
-    return limpiar_sql(sql)
-
-
-def ejecutar_sql(conn, db_type: str, sql: str) -> pd.DataFrame:
-    """Ejecuta un SELECT de forma segura y devuelve un DataFrame."""
-    sql_lower = sql.strip().lower()
-    if not sql_lower.startswith("select"):
-        raise ValueError("Solo se permiten consultas SELECT.")
-    for kw in ("drop ", "delete ", "update ", "insert ", "alter ", "truncate "):
-        if kw in sql_lower:
-            raise ValueError(f"Instrucción no permitida detectada: {kw.strip()}")
-
-    if db_type == "postgresql":
-        return pd.read_sql(text(sql), conn)
-    else:
-        return pd.read_sql_query(sql, conn)
-
-
-def generar_respuesta_natural(cadena_resp, pregunta: str, sql: str, df: pd.DataFrame) -> str:
-    tabla_str = df.to_string(index=False) if not df.empty else "(Sin resultados)"
-    resp = cadena_resp.invoke({
-        "pregunta_usuario":  pregunta,
-        "sql_generado":      sql,
-        "resultado_tabular": tabla_str,
-    })
-    return resp.strip()
-
-
-# ══════════════════════════════════════════════════════════
-# VOZ: TRANSCRIPCIÓN (STT) con Whisper
-# ══════════════════════════════════════════════════════════
-
-@st.cache_resource
-def cargar_whisper():
-    if not WHISPER_OK:
+        texto = r.recognize_google(audio, language="es-ES")
+        return texto
+    except:
+        st.toast("⚠️ No se pudo reconocer el audio", icon="⚠️")
         return None
-    try:
-        return openai_whisper.load_model("base")  # ~140MB; usar "small" para más precisión
-    except Exception:
-        return None
 
 
-def transcribir_audio(modelo_whisper, audio_bytes: bytes) -> str:
-    """Transcribe un archivo de audio a texto usando Whisper local."""
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-        tmp.write(audio_bytes)
-        tmp_path = tmp.name
-    try:
-        resultado = modelo_whisper.transcribe(tmp_path, language="es")
-        return resultado["text"].strip()
-    finally:
-        os.unlink(tmp_path)
+# ─────────────────────────────────────────────
+# 📊 GRÁFICA INTELIGENTE
+# ─────────────────────────────────────────────
+ESTILO = {
+    "bg_fig":  "#13161e",
+    "bg_ax":   "#0d1117",
+    "accent":  "#00d4aa",
+    "accent2": "#7b61ff",
+    "danger":  "#ff4d6d",
+    "muted":   "#6b7280",
+    "border":  "#1e2330",
+    "palette": ["#00d4aa","#7b61ff","#ff4d6d","#f59e0b","#38bdf8","#a3e635","#fb923c"],
+}
 
+def _base_fig(w=10, h=4):
+    fig, ax = plt.subplots(figsize=(w, h))
+    fig.patch.set_facecolor(ESTILO["bg_fig"])
+    ax.set_facecolor(ESTILO["bg_ax"])
+    ax.spines[['top','right','left']].set_visible(False)
+    ax.spines['bottom'].set_color(ESTILO["border"])
+    ax.tick_params(colors=ESTILO["muted"], labelsize=9)
+    ax.yaxis.set_tick_params(labelcolor=ESTILO["muted"])
+    return fig, ax
 
-# ══════════════════════════════════════════════════════════
-# VOZ: SÍNTESIS (TTS) con gTTS o ElevenLabs
-# ══════════════════════════════════════════════════════════
+def _detectar_tipo(df, pregunta):
+    p = pregunta.lower()
+    cols_num = df.select_dtypes(include=['number']).columns.tolist()
+    cols_txt = df.select_dtypes(exclude=['number']).columns.tolist()
+    filas = len(df)
 
-def texto_a_voz_gtts(texto: str) -> bytes:
-    """Sintetiza texto con gTTS (gratis, no requiere API key)."""
-    buf = io.BytesIO()
-    tts = gTTS(text=texto, lang="es", slow=False)
-    tts.write_to_fp(buf)
-    buf.seek(0)
-    return buf.read()
+    if filas == 1 and len(df.columns) == 1:
+        return 'none'
+    if any(w in p for w in ['evoluci','tendencia','tiempo','año','mes','fecha','hist']):
+        return 'line'
+    if any(w in p for w in ['distribuci','frecuencia','rango','histograma']):
+        return 'hist'
+    if any(w in p for w in ['correlaci','relaci','dispersi','scatter']):
+        return 'scatter'
+    if any(w in p for w in ['proporci','porcentaje','participaci','pastel','pie']):
+        return 'pie'
+    if filas == 1:
+        return 'none'
+    if filas > 30 and len(cols_num) == 1 and len(cols_txt) == 0:
+        return 'hist'
+    if filas <= 5 and len(cols_num) >= 1 and len(cols_txt) >= 1:
+        return 'pie'
+    if len(cols_num) >= 2 and len(cols_txt) == 0:
+        return 'scatter'
+    return 'bar'
 
+def _grafica_barras(df, ax, col_x, col_y):
+    ax.bar(df[col_x].astype(str), df[col_y],
+           color=ESTILO["accent"], alpha=.85, width=.6,
+           edgecolor=ESTILO["bg_fig"], linewidth=.8)
+    ax.set_xlabel(col_x, color=ESTILO["muted"], fontsize=9)
+    ax.set_ylabel(col_y, color=ESTILO["muted"], fontsize=9)
+    plt.xticks(rotation=35, ha='right', color=ESTILO["muted"])
 
-def texto_a_voz_elevenlabs(texto: str) -> bytes:
-    """Sintetiza texto con ElevenLabs (alta calidad, requiere API key)."""
-    api_key  = os.getenv("ELEVENLABS_API_KEY", "")
-    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "XB0fDUnXU5powFXDhCwa")
+def _grafica_linea(df, ax, col_x, cols_y):
+    for i, col in enumerate(cols_y):
+        color = ESTILO["palette"][i % len(ESTILO["palette"])]
+        ax.plot(df[col_x].astype(str), df[col],
+                color=color, linewidth=2, marker='o',
+                markersize=5, markerfacecolor=ESTILO["bg_ax"])
+        ax.fill_between(range(len(df)), df[col], alpha=.08, color=color)
+    ax.set_xlabel(col_x, color=ESTILO["muted"], fontsize=9)
+    ax.set_xticks(range(len(df)))
+    ax.set_xticklabels(df[col_x].astype(str), rotation=35, ha='right', color=ESTILO["muted"])
+    if len(cols_y) > 1:
+        ax.legend(cols_y, facecolor=ESTILO["bg_fig"], labelcolor=ESTILO["muted"], fontsize=8)
 
-    if not api_key:
-        raise ValueError("ELEVENLABS_API_KEY no configurada en .env")
+def _grafica_scatter(df, ax, col_x, col_y):
+    ax.scatter(df[col_x], df[col_y],
+               color=ESTILO["accent2"], alpha=.7, s=60,
+               edgecolors=ESTILO["bg_fig"], linewidth=.5)
+    ax.set_xlabel(col_x, color=ESTILO["muted"], fontsize=9)
+    ax.set_ylabel(col_y, color=ESTILO["muted"], fontsize=9)
 
-    client = ElevenLabs(api_key=api_key)
-    audio = client.generate(
-        text=texto,
-        voice=voice_id,
-        model="eleven_multilingual_v2"
+def _grafica_pie(df, ax, col_x, col_y):
+    wedges, texts, autotexts = ax.pie(
+        df[col_y], labels=df[col_x].astype(str),
+        colors=ESTILO["palette"][:len(df)],
+        autopct='%1.1f%%', startangle=140,
+        pctdistance=.82, wedgeprops=dict(width=.6, edgecolor=ESTILO["bg_fig"])
     )
-    return b"".join(audio)
+    for t in texts:     t.set_color(ESTILO["muted"]); t.set_fontsize(8)
+    for t in autotexts: t.set_color('#ffffff');        t.set_fontsize(8)
 
+def _grafica_hist(df, ax, col_y):
+    ax.hist(df[col_y].dropna(), bins=20,
+            color=ESTILO["accent"], alpha=.8,
+            edgecolor=ESTILO["bg_fig"], linewidth=.6)
+    ax.set_xlabel(col_y, color=ESTILO["muted"], fontsize=9)
+    ax.set_ylabel("Frecuencia", color=ESTILO["muted"], fontsize=9)
 
-def sintetizar_voz(texto: str, motor: str) -> bytes | None:
-    """Elige el motor TTS según configuración."""
-    try:
-        if motor == "ElevenLabs" and ELEVENLABS_OK:
-            return texto_a_voz_elevenlabs(texto)
-        elif motor == "gTTS" and GTTS_OK:
-            return texto_a_voz_gtts(texto)
-    except Exception as e:
-        st.warning(f"⚠️ No se pudo generar audio: {e}")
-    return None
-
-
-# ══════════════════════════════════════════════════════════
-# FLUJO PRINCIPAL DE CONSULTA
-# ══════════════════════════════════════════════════════════
-
-def procesar_pregunta(pregunta: str, motor_tts: str):
-    """
-    Ejecuta el pipeline completo:
-      1. Pregunta → SQL
-      2. SQL → DataFrame
-      3. DataFrame → Respuesta natural
-      4. Respuesta → Audio (opcional)
-    """
-    conn, db_type = obtener_conexion()
-    cadenas, error_llm = obtener_llm()
-
-    if error_llm or cadenas is None:
-        st.error(f"❌ LLM no disponible: {error_llm or 'instala langchain-openai'}")
+def mostrar_grafica(df, pregunta=""):
+    if df is None or df.empty:
+        return
+    cols_num = df.select_dtypes(include=['number']).columns.tolist()
+    cols_txt = df.select_dtypes(exclude=['number']).columns.tolist()
+    if not cols_num:
         return
 
-    cadena_sql, cadena_resp = cadenas
+    tipo = _detectar_tipo(df, pregunta)
+    if tipo == 'none':
+        return
 
-    with st.spinner("🧠 Generando SQL..."):
-        try:
-            sql = generar_sql(cadena_sql, pregunta)
-        except Exception as e:
-            st.error(f"❌ Error generando SQL: {e}")
-            return
+    ICONOS  = {'bar':'📊','line':'📈','scatter':'🔵','pie':'🥧','hist':'📉'}
+    NOMBRES = {'bar':'Barras','line':'Tendencia','scatter':'Dispersión','pie':'Proporción','hist':'Distribución'}
+    st.markdown(f"#### {ICONOS.get(tipo,'📊')} {NOMBRES.get(tipo,'Visualización')}")
 
-    # Mostrar trazabilidad
-    with st.expander("🔍 SQL generado", expanded=True):
-        st.code(sql, language="sql")
+    fig, ax = _base_fig()
 
-    with st.spinner("🗄️ Consultando base de datos..."):
-        try:
-            df = ejecutar_sql(conn, db_type, sql)
-        except Exception as e:
-            st.error(f"❌ Error ejecutando SQL: {e}")
-            return
+    if tipo == 'bar':
+        col_x = cols_txt[0] if cols_txt else (df.reset_index().columns[0])
+        if not cols_txt:
+            df = df.reset_index()
+            col_x = df.columns[0]
+        _grafica_barras(df, ax, col_x, cols_num[0])
 
-    # Mostrar tabla
-    st.markdown(f"**📊 Resultados** — {len(df)} registro(s) encontrado(s)")
-    if not df.empty:
-        st.dataframe(df, use_container_width=True)
-    else:
-        st.info("No se encontraron registros.")
+    elif tipo == 'line':
+        col_x = cols_txt[0] if cols_txt else cols_num[0]
+        ys = [c for c in cols_num if c != col_x] or cols_num
+        _grafica_linea(df, ax, col_x, ys)
 
-    # Respuesta natural
-    with st.spinner("💬 Generando respuesta..."):
-        try:
-            respuesta = generar_respuesta_natural(cadena_resp, pregunta, sql, df)
-        except Exception as e:
-            respuesta = f"(Error generando respuesta natural: {e})"
+    elif tipo == 'scatter':
+        cx, cy = cols_num[0], cols_num[1] if len(cols_num) > 1 else cols_num[0]
+        _grafica_scatter(df, ax, cx, cy)
 
-    st.markdown("### 🧾 Respuesta")
-    st.success(respuesta)
+    elif tipo == 'pie':
+        col_x = cols_txt[0] if cols_txt else cols_num[0]
+        _grafica_pie(df, ax, col_x, cols_num[0])
 
-    # Síntesis de voz
-    if motor_tts != "Sin audio":
-        with st.spinner(f"🔊 Sintetizando voz con {motor_tts}..."):
-            audio_bytes = sintetizar_voz(respuesta, motor_tts)
-        if audio_bytes:
-            st.audio(audio_bytes, format="audio/mp3")
+    elif tipo == 'hist':
+        _grafica_hist(df, ax, cols_num[0])
 
-    # Guardar en historial
-    if "historial" not in st.session_state:
+    plt.tight_layout()
+    st.pyplot(fig)
+    plt.close(fig)
+
+
+# ─────────────────────────────────────────────
+# 📑 SIDEBAR — HISTORIAL
+# ─────────────────────────────────────────────
+with st.sidebar:
+    st.markdown('<div class="sidebar-title">📜 Historial</div>', unsafe_allow_html=True)
+
+    st.markdown('<div class="clear-btn">', unsafe_allow_html=True)
+    if st.button("🗑️ Limpiar historial", width='stretch'):
         st.session_state.historial = []
-    st.session_state.historial.append({
-        "pregunta":  pregunta,
-        "sql":       sql,
-        "registros": len(df),
-        "respuesta": respuesta,
-    })
+        st.rerun()
+    st.markdown('</div>', unsafe_allow_html=True)
 
+    st.markdown("<br>", unsafe_allow_html=True)
 
-# ══════════════════════════════════════════════════════════
-# INTERFAZ STREAMLIT
-# ══════════════════════════════════════════════════════════
-
-def main():
-    st.set_page_config(
-        page_title="DataDialogue AI",
-        page_icon="🏦",
-        layout="wide",
-    )
-
-    # ── Sidebar ───────────────────────────────────────────
-    with st.sidebar:
-        st.title("⚙️ Configuración")
-
-        st.subheader("🧠 Modelo LLM")
-        provider = st.selectbox(
-            "Proveedor",
-            ["OpenAI (nube)", "Ollama (local)", "LM Studio (local)"],
-            help="Selecciona el proveedor de IA para NL→SQL"
+    if not st.session_state.historial:
+        st.markdown(
+            '<p style="font-family:\'DM Mono\',monospace;font-size:.78rem;color:#3d4555;">'
+            '// Sin consultas aún</p>',
+            unsafe_allow_html=True
         )
-        if provider == "Ollama (local)":
-            os.environ["LLM_PROVIDER"]  = "ollama"
-            os.environ["LLM_BASE_URL"]  = st.text_input("URL Ollama", "http://localhost:11434/v1")
-            os.environ["LLM_MODEL"]     = st.text_input("Modelo", "llama3.2")
-        elif provider == "LM Studio (local)":
-            os.environ["LLM_PROVIDER"]  = "lmstudio"
-            os.environ["LLM_BASE_URL"]  = st.text_input("URL LM Studio", "http://localhost:1234/v1")
-            os.environ["LLM_MODEL"]     = st.text_input("Modelo", "mistral-7b-instruct")
-        else:
-            os.environ["LLM_PROVIDER"]  = "openai"
-            api_key = st.text_input("OpenAI API Key", type="password",
-                                     value=os.getenv("OPENAI_API_KEY", ""))
-            if api_key:
-                os.environ["OPENAI_API_KEY"] = api_key
-            os.environ["LLM_MODEL"] = st.text_input("Modelo", "gpt-4.1-mini")
+    else:
+        for item in reversed(st.session_state.historial):
+            st.markdown(f"""
+            <div class="hist-item">
+                <div class="hist-q">❯ {item['pregunta']}</div>
+                <div class="hist-a">{item['respuesta']}</div>
+            </div>
+            """, unsafe_allow_html=True)
 
-        st.divider()
-        st.subheader("🎧 Síntesis de voz")
-        motor_tts = st.radio(
-            "Motor TTS",
-            ["Sin audio", "gTTS (gratis)", "ElevenLabs (premium)"],
-            help="gTTS no requiere API key. ElevenLabs requiere clave en .env"
-        )
-        motor_tts_clean = motor_tts.split(" ")[0]  # "gTTS" | "ElevenLabs" | "Sin"
 
-        st.divider()
-        st.subheader("ℹ️ Estado del sistema")
-        st.write("LangChain:", "✅" if LANGCHAIN_OK else "❌ pip install langchain-openai")
-        st.write("Whisper:",   "✅" if WHISPER_OK   else "❌ pip install openai-whisper")
-        st.write("gTTS:",      "✅" if GTTS_OK       else "❌ pip install gTTS")
-        st.write("ElevenLabs:","✅" if ELEVENLABS_OK else "❌ pip install elevenlabs")
+# ─────────────────────────────────────────────
+# 🖥️ ÁREA PRINCIPAL
+# ─────────────────────────────────────────────
 
-    # ── Encabezado principal ──────────────────────────────
-    st.title("🏦 DataDialogue AI")
-    st.caption("Consulta la base de datos bancaria con lenguaje natural · texto o voz")
+# HERO HEADER
+st.markdown("""
+<div class="hero">
+    <div class="hero-title">QueryVoice</div>
+    <div class="hero-sub">// NL → SQL · VOICE · VISUALIZATION &nbsp;|&nbsp; PostgreSQL · LLaMA3 · ElevenLabs</div>
+</div>
+""", unsafe_allow_html=True)
 
-    # ── Tabs: Texto / Voz / Historial ────────────────────
-    tab_texto, tab_voz, tab_historial = st.tabs(["💬 Texto", "🎙️ Voz", "📋 Historial"])
+# COLUMNAS: info badges
+b1, b2, b3, _ = st.columns([1, 1, 1, 4])
+with b1:
+    st.markdown('<span class="badge badge-live">⬤ LLM activo</span>', unsafe_allow_html=True)
+with b2:
+    st.markdown('<span class="badge badge-live">⬤ DB conectada</span>', unsafe_allow_html=True)
+with b3:
+    st.markdown('<span class="badge badge-live">⬤ Voz lista</span>', unsafe_allow_html=True)
 
-    # ── Tab 1: Consulta por texto ─────────────────────────
-    with tab_texto:
-        st.subheader("Escribe tu pregunta")
-        sugerencias = [
-            "¿Qué clientes viven en Bogotá?",
-            "¿Cuál es el saldo total por ciudad?",
-            "¿Cuántas cuentas activas hay?",
-            "¿Qué movimientos tuvo Ana Gómez?",
-            "¿Cuáles son las 3 cuentas con mayor saldo?",
-        ]
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            pregunta_texto = st.text_input(
-                "Pregunta",
-                placeholder="Ej: ¿Qué clientes tienen cuenta de ahorros?",
-                label_visibility="collapsed"
+st.markdown("<br>", unsafe_allow_html=True)
+
+# RESULTADO ACTUAL
+if st.session_state.ultima_respuesta:
+    st.markdown(f"""
+    <div class="response-card">
+        <div class="response-label">🤖 Respuesta</div>
+        <div class="response-text">{st.session_state.ultima_respuesta}</div>
+    </div>
+    """, unsafe_allow_html=True)
+
+    if st.session_state.ultimo_audio:
+        st.audio(st.session_state.ultimo_audio, format="audio/mp3")
+
+    if st.session_state.ultimo_df is not None and not st.session_state.ultimo_df.empty:
+        with st.expander("📋 Ver tabla de datos", expanded=False):
+            st.dataframe(
+                st.session_state.ultimo_df,
+                width='stretch',
+                hide_index=True
             )
-        with col2:
-            enviar = st.button("🔍 Consultar", use_container_width=True, type="primary")
+        mostrar_grafica(st.session_state.ultimo_df, st.session_state.get("ultima_pregunta", ""))
 
-        st.caption("💡 Sugerencias: " + " · ".join(f"*{s}*" for s in sugerencias[:3]))
+    st.markdown('<hr class="divider">', unsafe_allow_html=True)
 
-        if enviar and pregunta_texto.strip():
-            st.divider()
-            procesar_pregunta(pregunta_texto.strip(), motor_tts_clean)
 
-    # ── Tab 2: Consulta por voz ───────────────────────────
-    with tab_voz:
-        st.subheader("Carga un archivo de audio")
+# ─────────────────────────────────────────────
+# 🛠️ LÓGICA DE PROCESAMIENTO
+# ─────────────────────────────────────────────
+def procesar_peticion(texto):
+    if texto:
+        with st.spinner("🧠 Generando consulta SQL…"):
+            sql = pregunta_a_sql(texto)
+        with st.spinner("⚡ Ejecutando en la base de datos…"):
+            datos = ejecutar_sql(sql)
 
-        if not WHISPER_OK:
-            st.warning("⚠️ Whisper no está instalado. Ejecuta: `pip install openai-whisper`")
-            st.info("También necesitas **ffmpeg**: https://ffmpeg.org/download.html")
+        # datos puede ser lista de tuplas O un string (error/éxito sin filas)
+        if isinstance(datos, str):
+            df = pd.DataFrame()
+            respuesta = datos
+        elif isinstance(datos, list) and len(datos) > 0:
+            try:
+                df = pd.DataFrame(datos)
+            except Exception:
+                df = pd.DataFrame()
+            try:
+                valor = datos[0][0]
+                respuesta = f"El resultado es {valor}"
+            except Exception:
+                respuesta = "Consulta ejecutada con éxito."
         else:
-            modelo_whisper = cargar_whisper()
-            if modelo_whisper is None:
-                st.error("❌ No se pudo cargar el modelo Whisper.")
-            else:
-                audio_file = st.file_uploader(
-                    "Sube un archivo de audio (.wav, .mp3, .m4a)",
-                    type=["wav", "mp3", "m4a", "ogg", "webm"],
-                    help="Graba tu pregunta y súbela aquí"
-                )
+            df = pd.DataFrame()
+            respuesta = "La consulta no devolvió resultados."
 
-                if audio_file:
-                    st.audio(audio_file)
-                    if st.button("🎙️ Transcribir y consultar", type="primary"):
-                        with st.spinner("🔊 Transcribiendo con Whisper..."):
-                            try:
-                                pregunta_voz = transcribir_audio(
-                                    modelo_whisper,
-                                    audio_file.read()
-                                )
-                            except Exception as e:
-                                st.error(f"❌ Error en transcripción: {e}")
-                                st.stop()
+        with st.spinner("🔊 Sintetizando voz…"):
+            audio = hablar(respuesta)
 
-                        st.info(f"📝 **Texto transcrito:** {pregunta_voz}")
-                        st.divider()
-                        procesar_pregunta(pregunta_voz, motor_tts_clean)
+        st.session_state.ultima_respuesta = respuesta
+        st.session_state.ultimo_audio = audio
+        st.session_state.ultimo_df = df
+        st.session_state.ultima_pregunta = texto
 
-    # ── Tab 3: Historial conversacional ──────────────────
-    with tab_historial:
-        st.subheader("📋 Historial de consultas")
+        if (len(st.session_state.historial) == 0
+                or st.session_state.historial[-1]["pregunta"] != texto):
+            st.session_state.historial.append({
+                "pregunta": texto,
+                "respuesta": respuesta
+            })
 
-        if "historial" not in st.session_state or not st.session_state.historial:
-            st.info("Aún no hay consultas realizadas en esta sesión.")
-        else:
-            for i, item in enumerate(reversed(st.session_state.historial), 1):
-                with st.expander(f"#{len(st.session_state.historial) - i + 1} — {item['pregunta'][:60]}"):
-                    st.markdown(f"**Pregunta:** {item['pregunta']}")
-                    st.code(item["sql"], language="sql")
-                    st.markdown(f"**Registros encontrados:** {item['registros']}")
-                    st.success(item["respuesta"])
-
-            if st.button("🗑️ Limpiar historial"):
-                st.session_state.historial = []
-                st.rerun()
+        st.rerun()
 
 
-if __name__ == "__main__":
-    main()
+# ─────────────────────────────────────────────
+# 💬 INPUT: TEXTO + MICRÓFONO
+# ─────────────────────────────────────────────
+col_texto, col_voz = st.columns([0.87, 0.13])
+
+with col_texto:
+    pregunta_t = st.chat_input("Escribe tu pregunta en lenguaje natural…")
+
+with col_voz:
+    st.markdown('<div style="padding-top:22px"></div>', unsafe_allow_html=True)
+    if st.button("🎙️", help="Hablar", width='stretch'):
+        p_voz = escuchar()
+        if p_voz:
+            procesar_peticion(p_voz)
+
+if pregunta_t:
+    procesar_peticion(pregunta_t)
